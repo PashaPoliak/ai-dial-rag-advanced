@@ -29,27 +29,79 @@ class TextProcessor:
             password=self.db_config['password']
         )
 
-    #TODO:
-    # provide method `process_text_file` that will:
-    #   - apply file name, chunk size, overlap, dimensions and bool of the table should be truncated
-    #   - truncate table with vectors if needed
-    #   - load content from file and generate chunks (in `utils.text` present `chunk_text` that will help do that)
-    #   - generate embeddings from chunks
-    #   - save (insert) embeddings and chunks to DB
-    #       hint 1: embeddings should be saved as string list
-    #       hint 2: embeddings string list should be casted to vector ({embeddings}::vector)
+    def _truncate_table(self):
+        """Truncate the vectors table to remove all existing entries"""
+        with self._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("TRUNCATE TABLE vectors RESTART IDENTITY;")
+                conn.commit()
+
+    def process_text_file(self, file_path: str, chunk_size: int = 150, overlap: int = 40, dimensions: int = 1536, truncate_table: bool = True):
+        """Process a text file by chunking, embedding, and storing in the database"""
+        if truncate_table:
+            self._truncate_table()
+        
+        # Load content from file
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content = file.read()
+        
+        # Generate chunks using the utility function
+        chunks = chunk_text(content, chunk_size, overlap)
+        
+        # Generate embeddings for all chunks at once
+        chunk_embeddings = self.embeddings_client.get_embeddings(chunks, dimensions)
+        
+        # Save each chunk with its embedding to the database
+        for i, chunk in enumerate(chunks):
+            embedding = chunk_embeddings[i]
+            self._save_chunk(chunk, embedding, file_path)
+    
+    def _save_chunk(self, text: str, embedding: list[float], document_name: str):
+        """Save a text chunk with its embedding to the database"""
+        with self._get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Convert embedding list to string representation for PostgreSQL
+                embedding_str = "{" + ",".join(map(str, embedding)) + "}"
+                
+                cursor.execute("""
+                    INSERT INTO vectors (document_name, text, embedding)
+                    VALUES (%s, %s, %s::vector)
+                """, (document_name, text, embedding_str))
+                conn.commit()
 
 
 
 
-    #TODO:
-    # provide method `search` that will:
-    #   - apply search mode, user request, top k for search, min score threshold and dimensions
-    #   - generate embeddings from user request
-    #   - search in DB relevant context
-    #     hint 1: to search it in DB you need to create just regular select query
-    #     hint 2: Euclidean distance `<->`, Cosine distance `<=>`
-    #     hint 3: You need to extract `text` from `vectors` table
-    #     hint 4: You need to filter distance in WHERE clause
-    #     hint 5: To get top k use `limit`
+    def search(self, user_request: str, search_mode: SearchMode = SearchMode.COSINE_DISTANCE, top_k: int = 5, min_score: float = 0.5, dimensions: int = 1536) -> list[str]:
+        """Search for relevant text chunks based on user request using vector similarity"""
+        # Generate embedding for user request
+        request_embedding = self.embeddings_client.get_embeddings([user_request], dimensions)
+        embedding_vector = request_embedding[0]  # Get the first (and only) embedding
+        
+        # Convert embedding list to string representation for PostgreSQL
+        embedding_str = "{" + ",".join(map(str, embedding_vector)) + "}"
+        
+        # Determine the distance operator based on search mode
+        if search_mode == SearchMode.EUCLIDIAN_DISTANCE:
+            operator = "<->"
+        elif search_mode == SearchMode.COSINE_DISTANCE:
+            operator = "<=>"
+        else:
+            raise ValueError(f"Unsupported search mode: {search_mode}")
+        
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                # Query to find similar vectors based on the selected distance metric
+                query = f"""
+                    SELECT text, embedding {operator} %s::vector AS distance
+                    FROM vectors
+                    WHERE embedding {operator} %s::vector <= %s
+                    ORDER BY distance
+                    LIMIT %s;
+                """
+                cursor.execute(query, (embedding_str, embedding_str, min_score, top_k))
+                results = cursor.fetchall()
+                
+        # Extract text from results
+        return [row['text'] for row in results]
 

@@ -15,7 +15,34 @@ DIAL_EMBEDDINGS = 'https://ai-proxy.lab.epam.com/openai/deployments/{model}/embe
 #   with Embedding model and return back a dict with indexed embeddings (key is index from input list and value vector list)
 
 class DialEmbeddingsClient:
-    ...
+    def __init__(self, deployment_name: str, api_key: str):
+        self.deployment_name = deployment_name
+        self.api_key = api_key
+        self.endpoint = DIAL_EMBEDDINGS.format(model=deployment_name)
+
+    def get_embeddings(self, inputs: list[str], dimensions: int = 1536) -> dict[int, list[float]]:
+        headers = {
+            "api-key": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+        request_data = {
+            "input": inputs,
+            "dimensions": dimensions
+        }
+
+        response = requests.post(url=self.endpoint, headers=headers, json=request_data, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            embeddings_result = {}
+            for item in data.get("data", []):
+                index = item["index"]
+                embedding = item["embedding"]
+                embeddings_result[index] = embedding
+            return embeddings_result
+        else:
+            raise Exception(f"HTTP {response.status_code}: {response.text}")
 
 
 # Hint:

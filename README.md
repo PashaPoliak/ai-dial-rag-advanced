@@ -23,6 +23,7 @@ By completing this task, you will learn:
 1. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
+   python -m pytest --cov=. --cov-report=term-missing
    ```
 
 2. **Set your API key:**
